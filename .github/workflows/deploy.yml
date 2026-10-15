@@ -1,0 +1,62 @@
+name: Deploy ryan.dellol.io
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - README.md
+      - site/**
+      - .github/workflows/deploy.yml
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+concurrency:
+  group: deploy-ryan-dellol-io
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Render README with GitHub's Markdown API
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api markdown \
+            -f mode=gfm \
+            -f context=${{ github.repository }} \
+            -F text=@README.md \
+            > "$RUNNER_TEMP/readme.html"
+
+      - name: Build page
+        run: |
+          mkdir -p "$RUNNER_TEMP/dist"
+          python3 site/build.py site/index.html "$RUNNER_TEMP/readme.html" "$RUNNER_TEMP/dist/index.html"
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: arn:aws:iam::701051620143:role/github-actions-ryandellolio-deploy
+          aws-region: us-east-1
+
+      - name: Upload to S3
+        run: |
+          aws s3 cp "$RUNNER_TEMP/dist/index.html" s3://ryan.dellol.io/index.html \
+            --content-type "text/html; charset=utf-8" \
+            --cache-control "public, max-age=300"
+          for icon in favicon.png favicon-32.png apple-touch-icon.png; do
+            aws s3 cp "site/$icon" "s3://ryan.dellol.io/$icon" \
+              --content-type image/png \
+              --cache-control "public, max-age=86400"
+          done
+
+      - name: Invalidate CloudFront
+        run: |
+          aws cloudfront create-invalidation \
+            --distribution-id E24LUHEZH5A6FR \
+            --paths "/*"
